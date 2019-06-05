@@ -13,6 +13,40 @@ config.read('dl.cfg')
 os.environ['AWS_ACCESS_KEY_ID'] = config.get('LOGIN', 'AWS_ACCESS_KEY_ID')
 os.environ['AWS_SECRET_ACCESS_KEY'] = config.get('LOGIN', 'AWS_SECRET_ACCESS_KEY')
 
+song_schema = StructType([
+    StructField('num_songs', IntegerType(), True),
+    StructField('artist_id', StringType(), True),
+    StructField('artist_latitude', FloatType(), True),
+    StructField('artist_longitude', FloatType(), True),
+    StructField('artist_location', StringType(), True),
+    StructField('artist_name', StringType(), True),
+    StructField('song_id', StringType(), True),
+    StructField('title', StringType(), True),
+    StructField('duration', FloatType(), True),
+    StructField('year', IntegerType(), True)
+])
+
+log_schema = StructType([
+    StructField('artist', StringType(), True),
+    StructField('auth', StringType(), True),
+    StructField('firstName', StringType(), True),
+    StructField('gender', StringType(), True),
+    StructField('itemInSession', IntegerType(), True),
+    StructField('lastName', StringType(), True),
+    StructField('length', FloatType(), True),
+    StructField('level', StringType(), True),
+    StructField('location', StringType(), True),
+    StructField('method', StringType(), True),
+    StructField('page', StringType(), True),
+    StructField('registration', FloatType(), True),
+    StructField('sessionId', IntegerType(), True),
+    StructField('song', StringType(), True),
+    StructField('status', IntegerType(), True),
+    StructField('ts', LongType(), True),
+    StructField('userAgent', StringType(), True),
+    StructField('userId', StringType(), True)
+])
+
 
 def create_spark_session():
     """
@@ -37,18 +71,6 @@ def process_song_data(spark, input_data, output_data):
     :param output_data:
         Folder where the output of the ETL process is going to be placed.
     """
-    song_schema = StructType([
-        StructField('num_songs', IntegerType(), True),
-        StructField('artist_id', StringType(), True),
-        StructField('artist_latitude', FloatType(), True),
-        StructField('artist_longitude', FloatType(), True),
-        StructField('artist_location', StringType(), True),
-        StructField('artist_name', StringType(), True),
-        StructField('song_id', StringType(), True),
-        StructField('title', StringType(), True),
-        StructField('duration', FloatType(), True),
-        StructField('year', IntegerType(), True)
-    ])
     song_data = input_data + 'song_data/*/*/*/*'
 
     df = spark.read.json(song_data, schema=song_schema)
@@ -88,26 +110,6 @@ def process_log_data(spark, input_data, output_data):
     :param output_data:
         Folder where the output of the ETL process is going to be placed.
     """
-    log_schema = StructType([
-        StructField('artist', StringType(), True),
-        StructField('auth', StringType(), True),
-        StructField('firstName', StringType(), True),
-        StructField('gender', StringType(), True),
-        StructField('itemInSession', IntegerType(), True),
-        StructField('lastName', StringType(), True),
-        StructField('length', FloatType(), True),
-        StructField('level', StringType(), True),
-        StructField('location', StringType(), True),
-        StructField('method', StringType(), True),
-        StructField('page', StringType(), True),
-        StructField('registration', FloatType(), True),
-        StructField('sessionId', IntegerType(), True),
-        StructField('song', StringType(), True),
-        StructField('status', IntegerType(), True),
-        StructField('ts', LongType(), True),
-        StructField('userAgent', StringType(), True),
-        StructField('userId', StringType(), True)
-    ])
     log_data = input_data + 'log_data/*'
 
     df = spark.read.json(log_data, schema=log_schema)
@@ -118,7 +120,6 @@ def process_log_data(spark, input_data, output_data):
             last_value(level) over (
                 partition by userId
                 order by ts asc
-                rows between unbounded preceding and unbounded following
             ) as level
         from staging_event
         where userId is not null and page = 'NextSong'
@@ -145,29 +146,31 @@ def process_log_data(spark, input_data, output_data):
     ''')
     time_table.write.partitionBy('year', 'month').parquet(output_data + 'time/')
 
-    song_df = spark.read.option("mergeSchema", "true").parquet(output_data + 'songs/')
-    song_df.createOrReplaceTempView('song_table')
+    song_data = input_data + 'song_data/*/*/*/*'
+    song_df = spark.read.json(song_data, schema=song_schema)
+    song_df.createOrReplaceTempView("staging_song")
 
     songplays_table = spark.sql('''
         select monotonically_increasing_id() as songplay_id, 
             se.start_time as start_time,
             se.userId as user_id,
             se.level as level,
-            st.song_id as song_id,
-            st.artist_id as artist_id,
+            ss.song_id as song_id,
+            ss.artist_id as artist_id,
             se.sessionId as session_id,
             se.location as location,
             se.userAgent as user_agent
         from staging_event_with_date as se
-            left join song_table as st on (se.song = st.title)
+            left join staging_song as ss 
+            on (se.song = ss.title or se.artist = ss.artist_name or se.length = ss.duration)
         where se.page = 'NextSong'
     ''')
 
     function_names = [(year, 'year'), (month, 'month')]
     columns = [col('*')] + [f(col('start_time')).alias(name) for f, name in function_names]
-    songplays_table.select(*columns)\
-        .write\
-        .partitionBy(*(name for _, name in function_names))\
+    songplays_table.select(*columns) \
+        .write \
+        .partitionBy(*(name for _, name in function_names)) \
         .parquet(output_data + 'songplays/')
 
 
